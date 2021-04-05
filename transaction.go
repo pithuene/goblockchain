@@ -69,7 +69,7 @@ func (tx *Tx) Print(prefix string) {
 	for _, in := range tx.Inputs {
 		fmt.Println(prefix + "\t\tINPUT:")
 		fmt.Printf("%s\t\t\tFrom: %x\n", prefix, in.From)
-		fmt.Printf("%s\t\t\tOutput: %d\n of transaction %x in block %x", prefix, in.Output.OutputIdx, in.Output.TxHash, in.Output.BlockHash)
+		fmt.Printf("%s\t\t\tOutput: %d\n", prefix, in.Output.OutputIdx)
 		fmt.Printf("%s\t\t\tTransaction: %x\n", prefix, in.Output.TxHash)
 		fmt.Printf("%s\t\t\tBlock: %x\n", prefix, in.Output.BlockHash)
 	}

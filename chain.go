@@ -103,11 +103,59 @@ func (mp *Mempool) Push(tx *Tx) {
 	mp.pool[tx.Hash()] = tx
 }
 
-func (mp *Mempool) Pop() *Tx {
-	for _, tx := range mp.pool {
-		return tx
+func (mp *Mempool) Pop() (SHA256Sum, *Tx) {
+	for hash, tx := range mp.pool {
+		delete(mp.pool, hash)
+		return hash, tx
 	}
-	return nil
+	return emptyHash, nil
+}
+
+func (mp *Mempool) Count() int {
+	return len(mp.pool)
+}
+
+// Creates a transaction for `value` coins and pushes it into the mempool
+func (bc *Blockchain) Send(from SHA256Sum, to SHA256Sum, value uint64) error {
+	utxos := bc.GetUTxOsForUser(from)
+	sufficientFunds := utxos.Balance() >= value
+	if sufficientFunds {
+		var currValue uint64
+		inputs := make([]TxI, 0)
+		for _, utxo := range *utxos {
+			if currValue >= value {
+				break
+			} else {
+				inputs = append(inputs, TxI{
+					From:   from,
+					Output: &utxo.Path,
+				})
+				currValue += utxo.Value
+			}
+		}
+
+		output := TxO{
+			Value: value,
+			To:    to,
+		}
+
+		change := currValue - value
+		changeOutput := TxO{
+			Value: change,
+			To:    from,
+		}
+		tx := NewTx(
+			inputs,
+			[]TxO{
+				changeOutput,
+				output,
+			},
+		)
+		bc.mempool.Push(tx)
+		return nil
+	} else {
+		return errors.New(fmt.Sprintf("'%x' has insufficient funds to send %d coins", from, value))
+	}
 }
 
 // Appends a block to the blockchain
@@ -127,7 +175,6 @@ func (bc *Blockchain) AddBlock(block *Block) error {
 		return nil
 	})
 
-	// Update UTxO-Set
 	bc.UpdateUTxOSet(block)
 
 	return err
@@ -136,7 +183,8 @@ func (bc *Blockchain) AddBlock(block *Block) error {
 func (bc *Blockchain) MineNext() *Block {
 	block := NewBlock()
 	// TODO: Later the decision which transactions to mine should be made based on fees
-	for hash, tx := range bc.mempool.pool {
+	for bc.mempool.Count() > 0 {
+		hash, tx := bc.mempool.Pop()
 		block.AddTransaction(hash, tx)
 	}
 	block.LastBlockHash = bc.latestBlock

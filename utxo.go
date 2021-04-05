@@ -17,6 +17,24 @@ type UTxO struct {
 // A slice of unspent transaction outputs
 type UTxOs []*UTxO
 
+func (utxos *UTxOs) Serialize() []byte {
+	buf := bytes.Buffer{}
+	encoder := gob.NewEncoder(&buf)
+	err := encoder.Encode(utxos)
+	if err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func (utxos *UTxOs) Balance() uint64 {
+	var balance uint64
+	for _, uTxO := range *utxos {
+		balance += uTxO.Value
+	}
+	return balance
+}
+
 type UTxOMap struct {
 	Map        map[SHA256Sum]*UTxOs
 	utxoBucket *bolt.Bucket
@@ -153,18 +171,9 @@ func (bc *Blockchain) UpdateUTxOSet(block *Block) {
 			utxoMap.RemoveOutputsForInputs(tx)
 			utxoMap.AddOutputs(tx, txHash, block.PoW.Hash)
 		}
+		utxoMap.Persist()
 		return nil
 	})
-}
-
-func (utxos UTxOs) Serialize() []byte {
-	buf := bytes.Buffer{}
-	encoder := gob.NewEncoder(&buf)
-	err := encoder.Encode(utxos)
-	if err != nil {
-		panic(err)
-	}
-	return buf.Bytes()
 }
 
 func UTxOsDeserialize(rawUTxOs []byte) *UTxOs {
@@ -179,21 +188,16 @@ func UTxOsDeserialize(rawUTxOs []byte) *UTxOs {
 	return &utxos
 }
 
-func (bc *Blockchain) getUTxOsForUser(user SHA256Sum) *UTxOs {
+func (bc *Blockchain) GetUTxOsForUser(user SHA256Sum) *UTxOs {
 	var rawUTxOs []byte
 	bc.db.View(func(t *bolt.Tx) error {
 		utxoBucket := t.Bucket([]byte(utxoBucketName))
 		rawUTxOs = utxoBucket.Get(user[:])
 		return nil
 	})
-	return UTxOsDeserialize(rawUTxOs)
-}
-
-func (bc *Blockchain) GetBalance(user SHA256Sum) uint64 {
-	uTxOs := bc.getUTxOsForUser(user)
-	var balance uint64
-	for _, uTxO := range *uTxOs {
-		balance += uTxO.Value
+	if rawUTxOs != nil {
+		return UTxOsDeserialize(rawUTxOs)
+	} else {
+		return &UTxOs{}
 	}
-	return balance
 }
