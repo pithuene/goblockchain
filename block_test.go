@@ -3,24 +3,44 @@ package main
 import (
 	"testing"
 
-	"bytes"
+	"crypto/sha256"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestSerialization(t *testing.T) {
-	org_tx := NewTx(
+	tx := NewTx(
 		[]TxI{
-			{},
+			{
+				From: sha256.Sum256([]byte("Someone")),
+				Output: &TxOPath{
+					BlockHash: sha256.Sum256([]byte("Some hash")),
+					TxHash:    sha256.Sum256([]byte("Some other hash")),
+					OutputIdx: 5,
+				},
+			},
 		},
-		[]TxO{},
+		[]TxO{
+			{
+				Value: 123,
+				To:    sha256.Sum256([]byte("Someone else")),
+			},
+		},
 	)
-	t.Log(org_tx)
-	ser := org_tx.Serialize()
-	des_tx := TxDeserialize(ser)
-	t.Log(des_tx)
-	des_ser := des_tx.Serialize()
-	res := bytes.Compare(ser, des_ser)
+	org_block := &Block{
+		Transactions: map[SHA256Sum]*Tx{
+			tx.Hash(): tx,
+		},
+		PoW: &PoW{
+			Nonce: 123,
+			Hash:  sha256.Sum256([]byte("Something")),
+		},
+	}
+	ser := org_block.Serialize()
+	des_block := BlockDeserialize(ser)
 
-	if res != 0 {
+	if !cmp.Equal(org_block, des_block) {
+		t.Log(cmp.Diff(org_block, des_block))
 		t.Fail()
 	}
 }

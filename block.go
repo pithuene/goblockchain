@@ -8,112 +8,101 @@ import (
 	"fmt"
 )
 
-// TODO: For now there will be no blocks and transactions will be mined individually
-
-type TxO struct {
-	Value uint64
-	To    []byte
-}
-
-type TxI struct {
-	// TODO: Add signature
-
-	From      []byte
-	TxHash    [sha256.Size]byte
-	OutputIdx uint32
-}
-
 type PoW struct {
 	Nonce uint64
-	Hash  [sha256.Size]byte
+	Hash  SHA256Sum
 }
 
-type Tx struct {
-	Inputs  []TxI
-	Outputs []TxO
-	PoW
+type Block struct {
+	Transactions  map[SHA256Sum]*Tx
+	LastBlockHash SHA256Sum
+	PoW           *PoW
 }
 
-func NewTx(inputs []TxI, outputs []TxO) *Tx {
-	return &Tx{
-		Inputs:  inputs,
-		Outputs: outputs,
+func NewBlock() *Block {
+	return &Block{
+		Transactions: make(map[SHA256Sum]*Tx),
+		PoW:          &PoW{},
 	}
 }
 
-func (tx *Tx) Serialize() []byte {
+func (block *Block) AddTransaction(hash SHA256Sum, tx *Tx) {
+	block.Transactions[hash] = tx
+}
+
+func (block *Block) Serialize() []byte {
 	buf := bytes.Buffer{}
 	encoder := gob.NewEncoder(&buf)
-	err := encoder.Encode(tx)
+	err := encoder.Encode(block)
 	if err != nil {
 		panic(err)
 	}
 	return buf.Bytes()
 }
 
-func TxDeserialize(raw []byte) *Tx {
-	tx := Tx{}
+func BlockDeserialize(raw []byte) *Block {
+	var block Block
 	buf := bytes.Buffer{}
 	buf.Write(raw)
 	decoder := gob.NewDecoder(&buf)
-	err := decoder.Decode(&tx)
+	err := decoder.Decode(&block)
 	if err != nil {
 		panic(err)
 	}
-	return &tx
+	return &block
 }
 
-func (tx *Tx) Print() {
-	fmt.Println("TRANSACTION:")
-	fmt.Println("\tInputs:")
-	for _, in := range tx.Inputs {
-		fmt.Printf("\t\tFrom: %x found in %x at offset %d\n", in.From, in.TxHash, in.OutputIdx)
+// Get the binary representation of the block for hashing purposes
+// Last block hash must be set before.
+func (block *Block) Binary() []byte {
+	if block.LastBlockHash == emptyHash {
+		// Make sure LastBlockHash is set before hashing
+		panic("Tried getting binary of block with last block hash")
 	}
-	fmt.Println("\tOutputs:")
-	for _, out := range tx.Outputs {
-		fmt.Printf("\t\t%d to %x\n", out.Value, out.To)
+	var binaryBlock []byte
+	for _, tx := range block.Transactions {
+		binaryBlock = append(binaryBlock, tx.Binary()...)
 	}
-	fmt.Println("\tProof of Work:")
-	fmt.Printf("\t\tNonce: %d\n", tx.PoW.Nonce)
-	fmt.Printf("\t\tPoW hash: %x\n", tx.PoW.Hash)
+	binaryBlock = append(binaryBlock, block.LastBlockHash[:]...)
+	return binaryBlock
 }
 
-// Get the binary payload of the transaction for use in the PoW
-func (tx *Tx) Payload() []byte {
-	var parts [][]byte
-	for _, in := range tx.Inputs {
-		outIdxRaw := make([]byte, 4)
-		binary.LittleEndian.PutUint32(outIdxRaw, in.OutputIdx)
-		parts = append(parts, in.From, in.TxHash[:], outIdxRaw)
-	}
-	for _, out := range tx.Outputs {
-		valRaw := make([]byte, 8)
-		binary.LittleEndian.PutUint64(valRaw, out.Value)
-		parts = append(parts, out.To, valRaw)
-	}
-	return bytes.Join(parts, []byte{})
-}
-
-func (tx *Tx) Mine() {
+func (block *Block) Mine() {
 	fmt.Println("Mining block...")
+
 	// The number of 0 bits the hash needs to start with
-	var difficulty [sha256.Size]byte
+	var difficulty SHA256Sum
 	difficulty[2] = 0b00000100
-	tx.PoW.Nonce = 0
+
+	binaryBlock := block.Binary()
+
+	block.PoW.Nonce = 0
 	nonceRaw := make([]byte, 8)
+
 	for {
-		binary.LittleEndian.PutUint64(nonceRaw, tx.PoW.Nonce)
-		sum := sha256.Sum256(append(tx.Payload(), nonceRaw...))
+		binary.LittleEndian.PutUint64(nonceRaw, block.PoW.Nonce)
+		sum := sha256.Sum256(append(binaryBlock, nonceRaw...))
 		if bytes.Compare(difficulty[:], sum[:]) > 0 {
 			// Valid Nonce
-			tx.PoW.Hash = sum
+			block.PoW.Hash = sum
 			break
 		} else {
 			// Invalid Nonce
-			tx.PoW.Nonce += 1
+			block.PoW.Nonce += 1
 		}
 	}
 	fmt.Println("Success!")
-	fmt.Println("Nonce: " + fmt.Sprintf("%d", tx.PoW.Nonce))
-	fmt.Println("PoW: " + fmt.Sprintf("%x", tx.PoW.Hash))
+	block.Print()
+}
+
+// Print the block to stdout for debugging
+func (block *Block) Print() {
+	fmt.Println("BLOCK:")
+	fmt.Println("\tTransactions:")
+	for _, tx := range block.Transactions {
+		tx.Print("\t\t")
+	}
+	fmt.Println("\tProof of Work:")
+	fmt.Printf("\t\tNonce: %d\n", block.PoW.Nonce)
+	fmt.Printf("\t\tPoW hash: %x\n", block.PoW.Hash)
 }
