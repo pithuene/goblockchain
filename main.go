@@ -18,5 +18,6 @@ func main() {
 	retrievedBlock, _ := bc.GetBlock(block.PoW.Hash[:])
 	retrievedBlock.Print()
 
+	bc.GenerateUTxO()
 	fmt.Println(bc.GetBalance(bc.user))
 }

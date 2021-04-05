@@ -43,14 +43,13 @@ func recreateBucket(db *bolt.DB, bucketName string) error {
 	// Initialize blank bucket
 	err := db.Update(func(tx *bolt.Tx) error {
 		// Clear chain bucket
-		if tx.Bucket([]byte(chainBucketName)) != nil {
-			err := tx.DeleteBucket([]byte(chainBucketName))
-			if err != nil {
+		if tx.Bucket([]byte(bucketName)) != nil {
+			if err := tx.DeleteBucket([]byte(bucketName)); err != nil {
 				return err
 			}
 		}
 		// Create blank bucket
-		if _, err := tx.CreateBucket([]byte(chainBucketName)); err != nil {
+		if _, err := tx.CreateBucket([]byte(bucketName)); err != nil {
 			return err
 		}
 		return nil
@@ -111,6 +110,29 @@ func (mp *Mempool) Pop() *Tx {
 	return nil
 }
 
+// Appends a block to the blockchain
+// Fails if the blocks LastBlockHash doesn't match the latest block
+// or if the block has not been mined yet
+func (bc *Blockchain) AddBlock(block *Block) error {
+	if block.LastBlockHash != bc.latestBlock {
+		return errors.New("Block is not a valid extension of the chain")
+	}
+	if block.PoW.Hash == emptyHash {
+		return errors.New("Block is not mined yet")
+	}
+	err := bc.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(chainBucketName))
+		bucket.Put(block.PoW.Hash[:], block.Serialize())
+		bc.latestBlock = block.PoW.Hash
+		return nil
+	})
+
+	// Update UTxO-Set
+	bc.UpdateUTxOSet(block)
+
+	return err
+}
+
 func (bc *Blockchain) MineNext() *Block {
 	block := NewBlock()
 	// TODO: Later the decision which transactions to mine should be made based on fees
@@ -118,17 +140,9 @@ func (bc *Blockchain) MineNext() *Block {
 		block.AddTransaction(hash, tx)
 	}
 	block.LastBlockHash = bc.latestBlock
-
 	block.Mine()
 
-	// Add the mined block to chain
-	bc.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte(chainBucketName))
-		bucket.Put(block.PoW.Hash[:], block.Serialize())
-		bc.latestBlock = block.PoW.Hash
-		return nil
-	})
-
+	bc.AddBlock(block)
 	return block
 }
 

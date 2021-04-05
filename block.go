@@ -22,7 +22,10 @@ type Block struct {
 func NewBlock() *Block {
 	return &Block{
 		Transactions: make(map[SHA256Sum]*Tx),
-		PoW:          &PoW{},
+		PoW: &PoW{
+			Nonce: 0,
+			Hash:  emptyHash,
+		},
 	}
 }
 
