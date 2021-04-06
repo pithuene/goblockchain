@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/gob"
+	"errors"
 	"fmt"
 )
 
@@ -13,15 +14,22 @@ type PoW struct {
 	Hash  SHA256Sum
 }
 
+var difficulty SHA256Sum = SHA256Sum{
+	0x00, 0x00, 0b00000100, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+}
+
 type Block struct {
-	Transactions  map[SHA256Sum]*Tx
+	Transactions  []*Tx
 	LastBlockHash SHA256Sum
 	PoW           *PoW
 }
 
 func NewBlock() *Block {
 	return &Block{
-		Transactions: make(map[SHA256Sum]*Tx),
+		Transactions: make([]*Tx, 0),
 		PoW: &PoW{
 			Nonce: 0,
 			Hash:  emptyHash,
@@ -29,8 +37,8 @@ func NewBlock() *Block {
 	}
 }
 
-func (block *Block) AddTransaction(hash SHA256Sum, tx *Tx) {
-	block.Transactions[hash] = tx
+func (block *Block) AddTransaction(tx *Tx) {
+	block.Transactions = append(block.Transactions, tx)
 }
 
 func (block *Block) Serialize() []byte {
@@ -73,10 +81,6 @@ func (block *Block) Binary() []byte {
 func (block *Block) Mine() {
 	fmt.Println("Mining block...")
 
-	// The number of 0 bits the hash needs to start with
-	var difficulty SHA256Sum
-	difficulty[2] = 0b00000100
-
 	binaryBlock := block.Binary()
 
 	block.PoW.Nonce = 0
@@ -96,6 +100,37 @@ func (block *Block) Mine() {
 	}
 	fmt.Println("Success!")
 	block.Print()
+}
+
+// Verifies the PoW aswell as all transactions
+func (bc *Blockchain) VerifyBlock(block *Block) error {
+	// Verify the PoW
+	nonceRaw := make([]byte, 8)
+	binary.LittleEndian.PutUint64(nonceRaw, block.PoW.Nonce)
+	blockHash := sha256.Sum256(append(block.Binary(), nonceRaw...))
+	if bytes.Compare(difficulty[:], blockHash[:]) <= 0 {
+		// Invalid PoW
+		return errors.New(fmt.Sprintf("Block invalid! The PoW is not valid."))
+	}
+
+	// Verify all transactions
+	for txIdx, tx := range block.Transactions {
+		if txIdx == 0 {
+			// Mining reward transaction. This may mint new coins.
+			if len(tx.Outputs) != 1 {
+				return errors.New(fmt.Sprintf("Block invalid! Mining reward transaction has wrong number of outputs."))
+			}
+			if tx.Outputs[0].Value != miningReward {
+				return errors.New(fmt.Sprintf("Block invalid! Mining reward transaction outputs invalid reward size."))
+			}
+		} else {
+			if err := bc.VerifyTransaction(tx); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // Print the block to stdout for debugging

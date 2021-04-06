@@ -8,14 +8,15 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func TestSerialization(t *testing.T) {
-	tx := NewTx(
+func createTx() *Tx {
+	acc, _ := NewAccount()
+	return NewTx(
 		[]TxI{
 			{
-				From: sha256.Sum256([]byte("Someone")),
+				From: acc.Id,
 				Output: &TxOPath{
 					BlockHash: sha256.Sum256([]byte("Some hash")),
-					TxHash:    sha256.Sum256([]byte("Some other hash")),
+					TxIdx:     1,
 					OutputIdx: 5,
 				},
 			},
@@ -26,10 +27,21 @@ func TestSerialization(t *testing.T) {
 				To:    sha256.Sum256([]byte("Someone else")),
 			},
 		},
+		map[AccountId]Signature{
+			AccountId(emptyHash): []byte{0xFF},
+		},
 	)
+}
+
+func createBlock() *Block {
+	return NewBlock()
+
+}
+
+func TestSerialization(t *testing.T) {
 	org_block := &Block{
-		Transactions: map[SHA256Sum]*Tx{
-			tx.Hash(): tx,
+		Transactions: []*Tx{
+			createTx(),
 		},
 		PoW: &PoW{
 			Nonce: 123,

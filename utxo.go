@@ -36,7 +36,7 @@ func (utxos *UTxOs) Balance() uint64 {
 }
 
 type UTxOMap struct {
-	Map        map[SHA256Sum]*UTxOs
+	Map        map[AccountId]*UTxOs
 	utxoBucket *bolt.Bucket
 }
 
@@ -49,14 +49,14 @@ func NewUTxOMap(t *bolt.Tx) *UTxOMap {
 		panic("UTxO bucket not found!")
 	}
 	return &UTxOMap{
-		Map:        make(map[SHA256Sum]*UTxOs),
+		Map:        make(map[AccountId]*UTxOs),
 		utxoBucket: utxoBucket,
 	}
 }
 
 // Reads a user from the db into the map, overriding the current map value
 // Returns an error if the user can not be found
-func (utxoMap *UTxOMap) readUserFromDB(user SHA256Sum) error {
+func (utxoMap *UTxOMap) readUserFromDB(user AccountId) error {
 	raw := utxoMap.utxoBucket.Get(user[:])
 	if raw == nil {
 		return errors.New(fmt.Sprintf("User '%x' not found in UTxO bucket", user))
@@ -66,7 +66,7 @@ func (utxoMap *UTxOMap) readUserFromDB(user SHA256Sum) error {
 	return nil
 }
 
-func (utxoMap *UTxOMap) Get(user SHA256Sum) *UTxOs {
+func (utxoMap *UTxOMap) Get(user AccountId) *UTxOs {
 	// Check for cache hit
 	utxos := utxoMap.Map[user]
 	if utxos != nil {
@@ -80,7 +80,7 @@ func (utxoMap *UTxOMap) Get(user SHA256Sum) *UTxOs {
 	}
 }
 
-func (utxoMap *UTxOMap) Set(user SHA256Sum, utxos UTxOs) {
+func (utxoMap *UTxOMap) Set(user AccountId, utxos UTxOs) {
 	utxoMap.Map[user] = &utxos
 }
 
@@ -94,7 +94,7 @@ func (utxoMap *UTxOMap) RemoveOutputsForInputs(tx *Tx) {
 		removeOutputIdx := -1
 		for outIdx, output := range sendersOutputs {
 			if output.Path.BlockHash == in.Output.BlockHash &&
-				output.Path.TxHash == in.Output.TxHash &&
+				output.Path.TxIdx == in.Output.TxIdx &&
 				output.Path.OutputIdx == in.Output.OutputIdx {
 				removeOutputIdx = outIdx
 				break
@@ -112,13 +112,13 @@ func (utxoMap *UTxOMap) RemoveOutputsForInputs(tx *Tx) {
 	}
 }
 
-func (utxoMap *UTxOMap) AddOutputs(tx *Tx, txHash SHA256Sum, blockHash SHA256Sum) {
+func (utxoMap *UTxOMap) AddOutputs(tx *Tx, txIdx uint32, blockHash SHA256Sum) {
 	for outIdx, out := range tx.Outputs {
 		utxos := append(*utxoMap.Get(out.To), &UTxO{
 			Value: out.Value,
 			Path: TxOPath{
 				BlockHash: blockHash,
-				TxHash:    txHash,
+				TxIdx:     txIdx,
 				OutputIdx: uint32(outIdx),
 			},
 		})
@@ -149,9 +149,9 @@ func (bc *Blockchain) GenerateUTxO() {
 		for currBlockHash != nullHash {
 			currBlock = BlockDeserialize(chainBucket.Get(currBlockHash[:]))
 
-			for txHash, tx := range currBlock.Transactions {
+			for txIdx, tx := range currBlock.Transactions {
 				utxoMap.RemoveOutputsForInputs(tx)
-				utxoMap.AddOutputs(tx, txHash, currBlockHash)
+				utxoMap.AddOutputs(tx, uint32(txIdx), currBlockHash)
 			}
 
 			currBlockHash = currBlock.LastBlockHash
@@ -167,9 +167,9 @@ func (bc *Blockchain) GenerateUTxO() {
 func (bc *Blockchain) UpdateUTxOSet(block *Block) {
 	bc.db.Update(func(t *bolt.Tx) error {
 		utxoMap := NewUTxOMap(t)
-		for txHash, tx := range block.Transactions {
+		for txIdx, tx := range block.Transactions {
 			utxoMap.RemoveOutputsForInputs(tx)
-			utxoMap.AddOutputs(tx, txHash, block.PoW.Hash)
+			utxoMap.AddOutputs(tx, uint32(txIdx), block.PoW.Hash)
 		}
 		utxoMap.Persist()
 		return nil
@@ -188,7 +188,7 @@ func UTxOsDeserialize(rawUTxOs []byte) *UTxOs {
 	return &utxos
 }
 
-func (bc *Blockchain) GetUTxOsForUser(user SHA256Sum) *UTxOs {
+func (bc *Blockchain) GetUTxOsForUser(user AccountId) *UTxOs {
 	var rawUTxOs []byte
 	bc.db.View(func(t *bolt.Tx) error {
 		utxoBucket := t.Bucket([]byte(utxoBucketName))

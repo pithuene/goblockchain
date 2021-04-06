@@ -11,20 +11,22 @@ import (
 type SHA256Sum [sha256.Size]byte
 
 type Mempool struct {
-	pool map[SHA256Sum]*Tx
+	pool []*Tx
 }
 
 type Blockchain struct {
-	db          *bolt.DB
-	mempool     *Mempool
-	latestBlock SHA256Sum
-	user        SHA256Sum
+	db            *bolt.DB
+	mempool       *Mempool
+	latestBlock   SHA256Sum
+	miningAccount *Account
 }
 
 const (
-	dbFile          string = "blockchain.db"
-	chainBucketName string = "chain"
-	utxoBucketName  string = "utxo"
+	dbFile             string = "blockchain.db"
+	chainBucketName    string = "chain"
+	utxoBucketName     string = "utxo"
+	keystoreBucketName string = "keystore"
+	miningReward       uint64 = 100
 )
 
 // An unset, all zero hash used for comparisons
@@ -60,7 +62,7 @@ func recreateBucket(db *bolt.DB, bucketName string) error {
 // Creates a blank blockchain.
 // Overrides any existing chain.
 // Creates the genesis block.
-func NewBlockchain(user SHA256Sum) (*Blockchain, error) {
+func NewBlockchain(miningAcc *Account) (*Blockchain, error) {
 	db, err := bolt.Open(dbFile, 0666, nil)
 	if err != nil {
 		return nil, err
@@ -68,47 +70,47 @@ func NewBlockchain(user SHA256Sum) (*Blockchain, error) {
 
 	recreateBucket(db, chainBucketName)
 	recreateBucket(db, utxoBucketName)
+	recreateBucket(db, keystoreBucketName)
 
 	mempool := NewMempool()
 
-	// TODO: Remove all value here. For now this gives the creator 100 coins.
-	// TODO: Coins should only be introduced as mining rewards, but as long as there are no blocks that is difficult.
-	genesis := NewTx(
-		[]TxI{},
-		[]TxO{
-			{
-				To:    user,
-				Value: 100,
-			},
-		},
-	)
+	bc := Blockchain{
+		db:            db,
+		mempool:       mempool,
+		latestBlock:   nullHash,
+		miningAccount: miningAcc,
+	}
 
-	mempool.Push(genesis)
+	bc.GenerateUTxO()
 
-	return &Blockchain{
-		db:          db,
-		mempool:     mempool,
-		latestBlock: nullHash,
-		user:        user,
-	}, nil
+	fmt.Println("GENESIS")
+	// Mine genesis block
+	if _, err := bc.MineNext(); err != nil {
+		return nil, err
+	}
+
+	bc.AddKey(miningAcc.PublicKey)
+
+	return &bc, nil
 }
 
 func NewMempool() *Mempool {
 	return &Mempool{
-		pool: make(map[SHA256Sum]*Tx),
+		pool: make([]*Tx, 0, 10),
 	}
 }
 
 func (mp *Mempool) Push(tx *Tx) {
-	mp.pool[tx.Hash()] = tx
+	mp.pool = append(mp.pool, tx)
 }
 
-func (mp *Mempool) Pop() (SHA256Sum, *Tx) {
-	for hash, tx := range mp.pool {
-		delete(mp.pool, hash)
-		return hash, tx
+func (mp *Mempool) Pop() (*Tx, error) {
+	if len(mp.pool) == 0 {
+		return nil, errors.New("Mempool empty")
 	}
-	return emptyHash, nil
+	tx := mp.pool[0]
+	mp.pool = mp.pool[1:]
+	return tx, nil
 }
 
 func (mp *Mempool) Count() int {
@@ -116,8 +118,9 @@ func (mp *Mempool) Count() int {
 }
 
 // Creates a transaction for `value` coins and pushes it into the mempool
-func (bc *Blockchain) Send(from SHA256Sum, to SHA256Sum, value uint64) error {
-	utxos := bc.GetUTxOsForUser(from)
+func (bc *Blockchain) Send(from *Account, to AccountId, value uint64) error {
+	fmt.Printf("'%x' is sending %d to '%x'\n", from.Id, value, to)
+	utxos := bc.GetUTxOsForUser(from.Id)
 	sufficientFunds := utxos.Balance() >= value
 	if sufficientFunds {
 		var currValue uint64
@@ -127,7 +130,7 @@ func (bc *Blockchain) Send(from SHA256Sum, to SHA256Sum, value uint64) error {
 				break
 			} else {
 				inputs = append(inputs, TxI{
-					From:   from,
+					From:   from.Id,
 					Output: &utxo.Path,
 				})
 				currValue += utxo.Value
@@ -142,7 +145,7 @@ func (bc *Blockchain) Send(from SHA256Sum, to SHA256Sum, value uint64) error {
 		change := currValue - value
 		changeOutput := TxO{
 			Value: change,
-			To:    from,
+			To:    from.Id,
 		}
 		tx := NewTx(
 			inputs,
@@ -150,11 +153,14 @@ func (bc *Blockchain) Send(from SHA256Sum, to SHA256Sum, value uint64) error {
 				changeOutput,
 				output,
 			},
+			make(map[AccountId]Signature),
 		)
+		sig := from.Sign(tx)
+		tx.Signatures[from.Id] = sig
 		bc.mempool.Push(tx)
 		return nil
 	} else {
-		return errors.New(fmt.Sprintf("'%x' has insufficient funds to send %d coins", from, value))
+		return errors.New(fmt.Sprintf("'%x' has insufficient funds to send %d coins", from.Id, value))
 	}
 }
 
@@ -180,25 +186,47 @@ func (bc *Blockchain) AddBlock(block *Block) error {
 	return err
 }
 
-func (bc *Blockchain) MineNext() *Block {
+func (bc *Blockchain) MineNext() (*Block, error) {
 	block := NewBlock()
+
+	// Add mining reward transaction
+	// The mining reward transaction is always the first transaction in a block
+	miningRewardTx := NewTx(
+		[]TxI{},
+		[]TxO{
+			{
+				To:    bc.miningAccount.Id,
+				Value: miningReward,
+			},
+		},
+		map[AccountId]Signature{},
+	)
+	block.AddTransaction(miningRewardTx)
+
 	// TODO: Later the decision which transactions to mine should be made based on fees
 	for bc.mempool.Count() > 0 {
-		hash, tx := bc.mempool.Pop()
-		block.AddTransaction(hash, tx)
+		tx, err := bc.mempool.Pop()
+		if err != nil {
+			return nil, err
+		}
+		if err := bc.VerifyTransaction(tx); err != nil {
+			return nil, err
+		}
+		block.AddTransaction(tx)
 	}
+
 	block.LastBlockHash = bc.latestBlock
 	block.Mine()
 
 	bc.AddBlock(block)
-	return block
+	return block, nil
 }
 
-func (bc *Blockchain) GetBlock(powHash []byte) (*Block, error) {
+func (bc *Blockchain) GetBlock(powHash SHA256Sum) (*Block, error) {
 	var block *Block
 	err := bc.db.View(func(t *bolt.Tx) error {
 		bucket := t.Bucket([]byte(chainBucketName))
-		raw := bucket.Get(powHash)
+		raw := bucket.Get(powHash[:])
 		if raw == nil {
 			return errors.New("Block '" + fmt.Sprintf("%x", powHash) + "' not found!")
 		}
