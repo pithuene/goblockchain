@@ -68,7 +68,7 @@ func BlockDeserialize(raw []byte) *Block {
 func (block *Block) Binary() []byte {
 	if block.LastBlockHash == emptyHash {
 		// Make sure LastBlockHash is set before hashing
-		panic("Tried getting binary of block with last block hash")
+		panic("Tried getting binary of block without last block hash")
 	}
 	var binaryBlock []byte
 	for _, tx := range block.Transactions {

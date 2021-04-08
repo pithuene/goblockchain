@@ -22,10 +22,11 @@ type Blockchain struct {
 }
 
 const (
-	dbFile             string = "blockchain.db"
 	chainBucketName    string = "chain"
 	utxoBucketName     string = "utxo"
 	keystoreBucketName string = "keystore"
+	miscBucketName     string = "misc"
+	latestBlockKey     string = "latestBlock"
 	miningReward       uint64 = 100
 )
 
@@ -59,26 +60,59 @@ func recreateBucket(db *bolt.DB, bucketName string) error {
 	return err
 }
 
-// Creates a blank blockchain.
-// Overrides any existing chain.
-// Creates the genesis block.
-func NewBlockchain(miningAcc *Account) (*Blockchain, error) {
+// Creates a new blockchain object by
+func NewBlockchain(dbFile string, miningAcc *Account) (*Blockchain, error) {
 	db, err := bolt.Open(dbFile, 0666, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	recreateBucket(db, chainBucketName)
-	recreateBucket(db, utxoBucketName)
-	recreateBucket(db, keystoreBucketName)
+	// Default is an empty chain
+	latestBlock := nullHash
 
-	mempool := NewMempool()
+	db.View(func(t *bolt.Tx) error {
+		miscBucket := t.Bucket([]byte(miscBucketName))
+		if miscBucket == nil {
+			return nil
+		}
+		res := miscBucket.Get([]byte(latestBlockKey))
+		if res != nil {
+			copy(latestBlock[:], res[0:sha256.Size])
+		}
+		return nil
+	})
 
 	bc := Blockchain{
 		db:            db,
-		mempool:       mempool,
-		latestBlock:   nullHash,
+		mempool:       NewMempool(),
+		latestBlock:   latestBlock,
 		miningAccount: miningAcc,
+	}
+
+	if bc.IsEmpty() {
+		if err := bc.Initialize(); err != nil {
+			panic(err)
+		}
+	}
+
+	return &bc, nil
+}
+
+// Creates a blank blockchain, overwriting any existing chain.
+// Creates and mines the genesis block.
+func (bc *Blockchain) Initialize() error {
+	// (Re)create all database buckets
+	if err := recreateBucket(bc.db, chainBucketName); err != nil {
+		return err
+	}
+	if err := recreateBucket(bc.db, utxoBucketName); err != nil {
+		return err
+	}
+	if err := recreateBucket(bc.db, keystoreBucketName); err != nil {
+		return err
+	}
+	if err := recreateBucket(bc.db, miscBucketName); err != nil {
+		return err
 	}
 
 	bc.GenerateUTxO()
@@ -86,12 +120,12 @@ func NewBlockchain(miningAcc *Account) (*Blockchain, error) {
 	fmt.Println("GENESIS")
 	// Mine genesis block
 	if _, err := bc.MineNext(); err != nil {
-		return nil, err
+		return err
 	}
 
-	bc.AddKey(miningAcc.PublicKey)
-
-	return &bc, nil
+	// Add the miners key to the local keystore
+	bc.AddKey(bc.miningAccount.PublicKey)
+	return nil
 }
 
 func NewMempool() *Mempool {
@@ -177,9 +211,11 @@ func (bc *Blockchain) AddBlock(block *Block) error {
 	err := bc.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(chainBucketName))
 		bucket.Put(block.PoW.Hash[:], block.Serialize())
-		bc.latestBlock = block.PoW.Hash
 		return nil
 	})
+	if err := bc.SetLatestBlock(block.PoW.Hash); err != nil {
+		return err
+	}
 
 	bc.UpdateUTxOSet(block)
 
@@ -234,6 +270,26 @@ func (bc *Blockchain) GetBlock(powHash SHA256Sum) (*Block, error) {
 		return nil
 	})
 	return block, err
+}
+
+func (bc *Blockchain) SetLatestBlock(lb SHA256Sum) error {
+	err := bc.db.Update(func(t *bolt.Tx) error {
+		miscBucket := t.Bucket([]byte(miscBucketName))
+		if miscBucket == nil {
+			return errors.New("Unable to set latest block! Misc bucket not found.")
+		}
+		miscBucket.Put([]byte(latestBlockKey), lb[:])
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	bc.latestBlock = lb
+	return nil
+}
+
+func (bc *Blockchain) IsEmpty() bool {
+	return bc.latestBlock == nullHash
 }
 
 func (bc *Blockchain) Close() {
